@@ -1,0 +1,52 @@
+# Linux packages (deb, rpm, apk) built by the release workflow.
+name: underlay
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+version_schema: semver
+release: 1
+section: net
+priority: optional
+maintainer: Mark Tolmacs <mark@lazycat.hu>
+description: WireGuard mesh underlay with pkarr-based discovery
+license: Apache-2.0
+
+contents:
+  - src: ${BINARY}
+    dst: /usr/bin/underlay
+    expand: true
+    file_info:
+      mode: 0755
+  - src: README.md
+    dst: /usr/share/doc/underlay/README.md
+  - src: LICENSE
+    dst: /usr/share/doc/underlay/LICENSE
+  - src: THIRD-PARTY-LICENSES
+    dst: /usr/share/doc/underlay/THIRD-PARTY-LICENSES
+  - src: packaging/underlay.conf
+    dst: /etc/underlay/underlay.conf
+    type: config|noreplace
+    file_info:
+      mode: 0600
+  - src: packaging/underlay.service
+    dst: /usr/lib/systemd/system/underlay.service
+    packager: deb
+  - src: packaging/underlay.service
+    dst: /usr/lib/systemd/system/underlay.service
+    packager: rpm
+  - src: packaging/underlay.openrc
+    dst: /etc/init.d/underlay
+    packager: apk
+    file_info:
+      mode: 0755
+
+scripts:
+  postinstall: packaging/scripts/postinstall.sh
+  preremove: packaging/scripts/preremove.sh
+  postremove: packaging/scripts/postremove.sh
+
+# The systemd scripts do nothing without systemd, the apk only needs its own removal
+overrides:
+  apk:
+    scripts:
+      preremove: packaging/scripts/apk-preremove.sh

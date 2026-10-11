@@ -1,0 +1,23 @@
+[Unit]
+Description=underlay WireGuard mesh
+Documentation=file:/usr/share/doc/underlay/README.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+EnvironmentFile=/etc/underlay/underlay.conf
+ExecStart=/usr/bin/underlay
+Restart=always
+RestartSec=1
+# Netlink for the WireGuard interface, and CAP_NET_RAW for binding the API socket to it on
+# kernels before 5.7
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

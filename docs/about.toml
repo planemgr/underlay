@@ -1,0 +1,8 @@
+# Generate the THIRD-PARTY-LICENSES file with:
+#
+#   cargo about generate --locked --fail -c docs/about.toml -o THIRD-PARTY-LICENSES docs/about.hbs
+#
+accepted = ["Apache-2.0", "MIT", "BSD-3-Clause", "Unicode-3.0"]
+targets = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"]
+ignore-dev-dependencies = true
+private = { ignore = true }
