@@ -1,0 +1,54 @@
+[package]
+name = "underlay"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+description = "WireGuard mesh underlay with pkarr-based discovery"
+license = "Apache-2.0"
+
+[dependencies]
+anyhow = "1.0.103"
+base64 = "0.22.1"
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+ipnet = { version = "2.12.1", features = ["serde"] }
+libc = "0.2"
+pkarr = { version = "=8.1.0", default-features = false, features = ["dht"] }
+postcard = { version = "1.1.3", default-features = false, features = [
+  "use-std",
+] }
+rand = "0.8"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "=1.0.154"
+sha2 = "0.10"
+snow = { version = "0.10.0", default-features = false, features = [
+  "use-chacha20poly1305",
+  "use-blake2",
+  "use-curve25519",
+  "use-getrandom",
+] }
+socket2 = { version = "0.6.4", features = ["all"] }
+tokio = { version = "=1.53.2", features = [
+  "rt-multi-thread",
+  "macros",
+  "net",
+  "time",
+  "sync",
+  "io-util",
+  "signal",
+] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+x25519-dalek = { version = "2.0.1", features = ["static_secrets"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+netlink-packet-core = "0.7"
+netlink-packet-generic = "0.3"
+netlink-packet-route = "0.21"
+netlink-packet-wireguard = "0.2"
+netlink-request = "2.0.0"
+
+[profile.release]
+lto = "thin"
+strip = true

@@ -1,0 +1,100 @@
+# End-to-end test topology (run ./test.sh). Every node runs the same code.
+#
+#   internet 198.51.100.0/24 ("public": a documentation range, so it counts as public)
+#     dht    .2   private Mainline DHT the nodes bootstrap from
+#     pub0-2 .10-.12  nodes with a public address
+#     pub3   .13  joins late (test step 3)
+#     router .254 NATs the LAN below
+#   lan 192.168.50.0/24, routed out through the router (entrypoint.sh replaces Docker's route)
+#     nat0   .10  node behind NAT
+#     nat1   .11  node behind NAT, on the same LAN as nat0
+#
+# Restarting a container is like rebooting the node: the interface goes, the node gets a new key.
+# Killing the daemon (pkill underlay) is a daemon restart: the entrypoint starts it again.
+
+x-node: &node
+  build:
+    context: ../..
+    dockerfile: e2e/docker/Dockerfile
+  image: underlay-test
+  cap_add: [NET_ADMIN]
+  env_file: [join.env]
+  environment: &env
+    RUST_LOG: info,underlay=debug,mainline=error,pkarr=error,netlink_packet_route=error
+    UNDERLAY_DHT_BOOTSTRAP: 198.51.100.2:6881
+    UNDERLAY_GOSSIP_SECS: "2"
+    UNDERLAY_RECORD_SECS: "4"
+    UNDERLAY_ENTRY_TTL_SECS: "30"
+    UNDERLAY_TICK_SECS: "2"
+    UNDERLAY_ROTATE_SECS: "4"
+    UNDERLAY_COOLDOWN_SECS: "5"
+
+x-nat: &nat
+  <<: *node
+  environment:
+    <<: *env
+    GATEWAY: 192.168.50.254
+  depends_on: [router]
+
+services:
+  dht:
+    <<: *node
+    entrypoint: ["dht_node"]
+    networks:
+      internet: { ipv4_address: 198.51.100.2 }
+
+  pub0:
+    <<: *node
+    hostname: pub0
+    networks:
+      internet: { ipv4_address: 198.51.100.10 }
+
+  pub1:
+    <<: *node
+    hostname: pub1
+    networks:
+      internet: { ipv4_address: 198.51.100.11 }
+
+  pub2:
+    <<: *node
+    hostname: pub2
+    networks:
+      internet: { ipv4_address: 198.51.100.12 }
+
+  pub3:
+    <<: *node
+    hostname: pub3
+    profiles: [late]
+    networks:
+      internet: { ipv4_address: 198.51.100.13 }
+
+  router:
+    image: underlay-test
+    cap_add: [NET_ADMIN]
+    entrypoint: ["/router.sh"]
+    volumes: ["./router.sh:/router.sh:ro"]
+    sysctls:
+      net.ipv4.ip_forward: "1"
+    networks:
+      internet: { ipv4_address: 198.51.100.254 }
+      lan: { ipv4_address: 192.168.50.254 }
+
+  nat0:
+    <<: *nat
+    hostname: nat0
+    networks:
+      lan: { ipv4_address: 192.168.50.10 }
+
+  nat1:
+    <<: *nat
+    hostname: nat1
+    networks:
+      lan: { ipv4_address: 192.168.50.11 }
+
+networks:
+  internet:
+    ipam:
+      config: [{ subnet: 198.51.100.0/24, gateway: 198.51.100.1 }]
+  lan:
+    ipam:
+      config: [{ subnet: 192.168.50.0/24, gateway: 192.168.50.1 }]
