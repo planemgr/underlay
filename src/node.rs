@@ -325,10 +325,21 @@ impl Node {
         }
     }
 
+    /// Merges members `from` sent us, leaving out those stamped too far in the future
+    fn merge_received(&self, roster: &mut Roster, members: &[Member], from: IpAddr) -> bool {
+        let (changed, deferred) = roster.merge_received(members, now_millis());
+        for (name, ahead) in deferred {
+            warn!(
+                "ignoring {name} from {from} until our clock catches up: stamped {ahead:?} ahead of ours (clock skew?)"
+            );
+        }
+        changed
+    }
+
     fn handle_api(&self, req: ApiRequest, from: IpAddr) -> ApiResponse {
         let ApiRequest::Sync { members } = req;
         let mut inner = self.lock();
-        let changed = inner.roster.merge(&members);
+        let changed = self.merge_received(&mut inner.roster, &members, from);
         // WireGuard only delivers from a peer's own address, so this is about a stale roster
         if inner.roster.owner(from).is_none() {
             return ApiResponse::Unknown { caller: from };
@@ -441,7 +452,8 @@ impl Node {
                     info!("admitted by {} as {}", admitter.name, member.mesh_ip);
                     {
                         let mut inner = self.lock();
-                        inner.roster.merge(&[member, admitter.clone()]);
+                        let from = addr.ip();
+                        self.merge_received(&mut inner.roster, &[member, admitter.clone()], from);
                     }
                     self.wake.notify_one();
                     // The rest of the roster, right away
@@ -529,7 +541,7 @@ impl Node {
         let members = self.lock().roster.to_vec();
         match api::call(SocketAddr::new(ip, self.s.api_port), &ApiRequest::Sync { members }).await? {
             ApiResponse::Sync { members } => {
-                let changed = self.lock().roster.merge(&members);
+                let changed = self.merge_received(&mut self.lock().roster, &members, ip);
                 if changed {
                     self.wake.notify_one();
                 }

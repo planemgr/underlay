@@ -27,6 +27,10 @@ use crate::util::PubKey;
 /// Tombstones are forgotten after this long; until then their address stays with their name
 const TOMBSTONE_RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
+/// How far ahead of ours another node's clock may run. Every timestamp in a member wins merges
+/// by being larger, so one from far in the future would pin that member until the time came.
+pub const MAX_CLOCK_SKEW: Duration = Duration::from_secs(5 * 60);
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Member {
     pub name: String,
@@ -53,6 +57,12 @@ impl Member {
             && self.mesh_ip == other.mesh_ip
             && self.probe == other.probe
             && self.removed == other.removed
+    }
+
+    /// How many milliseconds the member's newest timestamp is past `now_ms`
+    fn ahead_of(&self, now_ms: u64) -> u64 {
+        let newest = self.generation.max(self.endpoints_at).max(self.heartbeat.saturating_mul(1000));
+        newest.saturating_sub(now_ms)
     }
 
     fn identity_rank(&self) -> (u64, bool, PubKey) {
@@ -163,8 +173,28 @@ impl Roster {
         changed
     }
 
+    /// Merges without checking clocks: for tests, where every clock is made up
+    #[cfg(test)]
     pub fn merge(&mut self, members: &[Member]) -> bool {
         members.iter().fold(false, |changed, m| self.merge_member(m) | changed)
+    }
+
+    /// Merges members from another node, setting aside any stamped more than `MAX_CLOCK_SKEW`
+    /// past `now_ms`. Those aren't kept or passed on; gossip offers them again, and they're taken
+    /// once our clock catches up. Clamping them instead would differ from node to node, and the
+    /// rosters wouldn't converge. Returns whether anything changed, and the set-aside members
+    /// with how far ahead they were.
+    pub fn merge_received(&mut self, members: &[Member], now_ms: u64) -> (bool, Vec<(String, Duration)>) {
+        let limit = MAX_CLOCK_SKEW.as_millis() as u64;
+        let mut changed = false;
+        let mut deferred = Vec::new();
+        for m in members {
+            match m.ahead_of(now_ms) {
+                ahead if ahead > limit => deferred.push((m.name.clone(), Duration::from_millis(ahead))),
+                _ => changed |= self.merge_member(m),
+            }
+        }
+        (changed, deferred)
     }
 
     /// Admits a node, or returns its entry when it is already a member with that key.
@@ -181,7 +211,10 @@ impl Roster {
             if m.wg_key == claim.wg_key {
                 return Ok(m.clone());
             }
-            if now_ms.saturating_sub(m.generation) < cooldown.as_millis() as u64 {
+            // A generation from far in the future (our clock went back, say) would otherwise hold
+            // the name in cooldown until then
+            let ahead = m.generation.saturating_sub(now_ms) > MAX_CLOCK_SKEW.as_millis() as u64;
+            if !ahead && now_ms.saturating_sub(m.generation) < cooldown.as_millis() as u64 {
                 return Err(Refusal::Cooldown);
             }
         }
@@ -202,7 +235,7 @@ impl Roster {
             Some(m) => (m.mesh_ip, m.probe),
             None => self.free_address(mesh, claim.name, probe).ok_or(Refusal::MeshFull)?,
         };
-        let generation = existing.as_ref().map_or(now_ms, |m| now_ms.max(m.generation + 1));
+        let generation = existing.as_ref().map_or(now_ms, |m| next_generation(m.generation, now_ms));
         let member = Member {
             name: claim.name.to_string(),
             wg_key: claim.wg_key,
@@ -236,7 +269,7 @@ impl Roster {
         let m = self.members.get_mut(name).expect("checked above");
         m.mesh_ip = ip;
         m.probe = probe;
-        m.generation = now_ms.max(m.generation + 1);
+        m.generation = next_generation(m.generation, now_ms);
         Some(ip)
     }
 
@@ -262,7 +295,7 @@ impl Roster {
         match self.members.get_mut(name) {
             Some(m) if !m.removed => {
                 m.removed = true;
-                m.generation = now_ms.max(m.generation + 1);
+                m.generation = next_generation(m.generation, now_ms);
                 true
             }
             _ => false,
@@ -285,6 +318,12 @@ impl Roster {
         self.members.retain(|_, m| !m.removed || now_ms.saturating_sub(m.generation) < retention);
         expired
     }
+}
+
+/// The generation that follows `previous`: later than it, unless it's further ahead of `now_ms`
+/// than other nodes accept, then `now_ms` so they take the change
+fn next_generation(previous: u64, now_ms: u64) -> u64 {
+    if previous.saturating_sub(now_ms) > MAX_CLOCK_SKEW.as_millis() as u64 { now_ms } else { now_ms.max(previous + 1) }
 }
 
 /// The `probe`th candidate address of `name` in `mesh`: a hash of both, past the network address
@@ -431,6 +470,42 @@ mod tests {
         old.merge(&new.to_vec());
         let m = old.get("w-0").unwrap();
         assert_eq!((m.wg_key, m.first_seen, m.heartbeat), (PubKey([2; 32]), 1_000, 150));
+    }
+
+    #[test]
+    fn members_from_the_future_wait() {
+        let skew = MAX_CLOCK_SKEW.as_millis() as u64;
+        let mut theirs = Roster::default();
+        theirs.admit(claim("w-0", 1), mesh(), 1_000, COOLDOWN).unwrap();
+        let mut ours = theirs.clone();
+        // Rejoined with a new key on a clock running far ahead
+        let ahead = theirs.admit(claim("w-0", 2), mesh(), 1_000_000 + skew + 1, COOLDOWN).unwrap();
+
+        let (changed, deferred) = ours.merge_received(&theirs.to_vec(), 1_000_000);
+        assert!(!changed);
+        assert_eq!(deferred, vec![("w-0".to_string(), Duration::from_millis(skew + 1))]);
+        assert_eq!(ours.get("w-0").unwrap().wg_key, PubKey([1; 32]));
+
+        // Within the skew it's taken
+        let (changed, deferred) = ours.merge_received(&theirs.to_vec(), 1_000_001);
+        assert!(changed && deferred.is_empty());
+        assert_eq!(ours.get("w-0").unwrap(), &ahead);
+
+        // Heartbeats and endpoints count too
+        let mut beat = ahead.clone();
+        beat.heartbeat = (1_000_001 + skew) / 1000 + 1;
+        assert_eq!(ours.merge_received(&[beat], 1_000_001).1.len(), 1);
+    }
+
+    #[test]
+    fn a_generation_far_ahead_holds_no_cooldown() {
+        let mut r = Roster::default();
+        r.admit(claim("w-0", 1), mesh(), 10_000_000, COOLDOWN).unwrap();
+        // Our clock went back an hour: the name isn't stuck until it comes forward again
+        let back = 10_000_000 - 3_600_000;
+        let rejoined = r.admit(claim("w-0", 2), mesh(), back, COOLDOWN).unwrap();
+        // And the change is stamped so other nodes take it
+        assert_eq!(rejoined.generation, back);
     }
 
     #[test]
