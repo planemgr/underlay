@@ -18,7 +18,7 @@ anyway; the design doesn't try to defend against token holders.
         Mainline DHT: cluster record = a few entry points (encrypted, signed)
                ▲ publish (public nodes)          │ resolve
                │                                 ▼
-   ┌────────┐ gossip ┌────────┐  admission (TCP, Noise NKpsk0)  ┌──────────┐
+   ┌────────┐ gossip ┌────────┐  admission (TCP, Noise XKpsk0)  ┌──────────┐
    │ node A │◄──────►│ node B │◄────────────────────────────────│ new node │
    └────────┘  over  └────────┘                                 └──────────┘
         ▲    WireGuard   ▲   push of the new member to everyone
@@ -29,9 +29,10 @@ anyway; the design doesn't try to defend against token holders.
   signs the cluster record, the key that encrypts it, and the admission handshake's pre-shared
   key. The token also carries the mesh's address range, so no two nodes can disagree on it.
 - **Joining.** A node asks any member to admit it: one it still knows from before, or an entry
-  point from the record. The admission is a Noise `NKpsk0` handshake over TCP: the member's
+  point from the record. The admission is a Noise `XKpsk0` handshake over TCP: the member's
   static key is its WireGuard key (from the record or the roster), so an impostor can't answer;
-  the pre-shared key means members only answer token holders. The member adds the node to its
+  the node's static key is the WireGuard key it registers, so it proves it holds it, and its
+  request can't be replayed; the pre-shared key means members only answer token holders. The member adds the node to its
   roster, pushes it to every other member and answers with the node's mesh address. The node
   then pulls the whole roster from it over the tunnel.
 - **Gossip.** Every interval each node exchanges rosters with one random peer over the mesh,

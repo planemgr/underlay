@@ -436,7 +436,7 @@ impl Node {
     async fn request_admission(&self, target: &EntryPoint, request: &AdmissionRequest) -> Result<bool> {
         let mut last_error = None;
         for addr in target.admission_addrs() {
-            match admission::request(addr, target.wg_key, &self.s.token, request).await {
+            match admission::request(addr, target.wg_key, &self.private_key.0, &self.s.token, request).await {
                 Ok(AdmissionResponse::Accepted { member, admitter }) => {
                     info!("admitted by {} as {}", admitter.name, member.mesh_ip);
                     {
