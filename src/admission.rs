@@ -1,8 +1,12 @@
 //! Admission: how a node that isn't a WireGuard peer yet becomes one.
 //!
-//! One Noise `NKpsk0` handshake over TCP carries the request and the answer:
+//! One Noise `XKpsk0` handshake over TCP carries the request, then one transport message the
+//! answer:
 //!
-//! - **N**: the joining node has no identity yet beyond the WireGuard key it asks to register;
+//! - **X**: the joining node's static key is the WireGuard key it asks to register, sent in the
+//!   third message, so it proves it holds that key. The request rides in that message too, which
+//!   depends on the admitting node's fresh ephemeral key: a recorded request can't be replayed
+//!   (say, to switch a name back to an old key once the cooldown passed);
 //! - **K**: it knows the admitting node's static key (its WireGuard key, from the cluster
 //!   record or the roster), so it can't be answered by an impostor;
 //! - **psk0**: the admission key derived from the join token, so nodes only answer token
@@ -13,7 +17,7 @@ use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, ensure};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
 use tokio::time::timeout;
@@ -22,22 +26,24 @@ use tracing::{debug, warn};
 use crate::proto::{AdmissionRequest, AdmissionResponse, IO_TIMEOUT, read_frame, write_frame};
 use crate::token::JoinToken;
 
-const NOISE_PARAMS: &str = "Noise_NKpsk0_25519_ChaChaPoly_BLAKE2s";
+const NOISE_PARAMS: &str = "Noise_XKpsk0_25519_ChaChaPoly_BLAKE2s";
 const NOISE_MAX: usize = 65535;
 const MAX_CONCURRENT: usize = 64;
 /// Sources the rate limit keeps track of; idle ones are forgotten first
 const MAX_SOURCES: usize = 4096;
 
 fn prologue(token: &JoinToken) -> Vec<u8> {
-    let mut p = b"underlay admission v2".to_vec();
+    let mut p = b"underlay admission v3".to_vec();
     p.extend_from_slice(token.cluster_key().as_bytes());
     p
 }
 
-/// Asks the node listening at `addr` (with WireGuard key `node_key`) to admit us
+/// Asks the node listening at `addr` (with WireGuard key `node_key`) to admit us. `private_key`
+/// is our WireGuard key, the one `req` registers.
 pub async fn request(
     addr: SocketAddr,
     node_key: [u8; 32],
+    private_key: &[u8; 32],
     token: &JoinToken,
     req: &AdmissionRequest,
 ) -> Result<AdmissionResponse> {
@@ -48,17 +54,23 @@ pub async fn request(
         let mut hs = snow::Builder::new(NOISE_PARAMS.parse()?)
             .prologue(&prologue)?
             .psk(0, &psk)?
+            .local_private_key(private_key)?
             .remote_public_key(&node_key)?
             .build_initiator()?;
 
         let mut buf = vec![0u8; NOISE_MAX];
+        let n = hs.write_message(&[], &mut buf)?;
+        write_frame(&mut stream, &buf[..n]).await?;
+
+        let msg = read_frame(&mut stream, NOISE_MAX).await.context("the node closed the connection")?;
+        hs.read_message(&msg, &mut buf)
+            .map_err(|_| anyhow!("the node doesn't authenticate (wrong key or join token?)"))?;
         let n = hs.write_message(&serde_json::to_vec(req)?, &mut buf)?;
         write_frame(&mut stream, &buf[..n]).await?;
 
+        let mut transport = hs.into_transport_mode()?;
         let reply = read_frame(&mut stream, NOISE_MAX).await.context("the node closed the connection")?;
-        let n = hs
-            .read_message(&reply, &mut buf)
-            .map_err(|_| anyhow!("the answer doesn't authenticate (wrong key or join token?)"))?;
+        let n = transport.read_message(&reply, &mut buf).map_err(|_| anyhow!("the answer doesn't authenticate"))?;
         serde_json::from_slice(&buf[..n]).context("malformed admission answer")
     })
     .await
@@ -164,11 +176,23 @@ where
     let msg = read_frame(&mut stream, NOISE_MAX).await?;
     let mut buf = vec![0u8; NOISE_MAX];
     // Fails unless the sender holds the join token
+    hs.read_message(&msg, &mut buf).map_err(|_| anyhow!("handshake doesn't authenticate"))?;
+    let n = hs.write_message(&[], &mut buf)?;
+    write_frame(&mut stream, &buf[..n]).await?;
+
+    // Bound to our fresh ephemeral key, so it can't be a replay
+    let msg = read_frame(&mut stream, NOISE_MAX).await?;
     let n = hs.read_message(&msg, &mut buf).map_err(|_| anyhow!("handshake doesn't authenticate"))?;
     let req: AdmissionRequest = serde_json::from_slice(&buf[..n]).context("malformed admission request")?;
+    ensure!(
+        hs.get_remote_static() == Some(&req.wg_key.0[..]),
+        "{:?} asks to register a WireGuard key it didn't prove it holds",
+        req.name
+    );
 
     let response = admit(req, peer);
-    let n = hs.write_message(&serde_json::to_vec(&response)?, &mut buf)?;
+    let mut transport = hs.into_transport_mode()?;
+    let n = transport.write_message(&serde_json::to_vec(&response)?, &mut buf)?;
     write_frame(&mut stream, &buf[..n]).await
 }
 
@@ -194,8 +218,8 @@ mod tests {
         addr
     }
 
-    fn req() -> AdmissionRequest {
-        AdmissionRequest { name: "w-0".into(), wg_key: PubKey([1; 32]), endpoints: vec![], hint: None }
+    fn req(wg_key: [u8; 32]) -> AdmissionRequest {
+        AdmissionRequest { name: "w-0".into(), wg_key: PubKey(wg_key), endpoints: vec![], hint: None }
     }
 
     #[test]
@@ -234,8 +258,9 @@ mod tests {
     async fn round_trip() {
         let token = token();
         let (private, public) = keypair();
+        let (mine, my_key) = keypair();
         let addr = start(token.clone(), private).await;
-        match request(addr, public, &token, &req()).await.unwrap() {
+        match request(addr, public, &mine, &token, &req(my_key)).await.unwrap() {
             AdmissionResponse::Refused { reason } => assert_eq!(reason, "w-0"),
             other => panic!("{other:?}"),
         }
@@ -246,9 +271,59 @@ mod tests {
         let token = token();
         let other_token = self::token();
         let (private, public) = keypair();
+        let (mine, my_key) = keypair();
         let addr = start(token.clone(), private).await;
-        assert!(request(addr, public, &other_token, &req()).await.is_err());
+        assert!(request(addr, public, &mine, &other_token, &req(my_key)).await.is_err());
         let (_, impostor) = keypair();
-        assert!(request(addr, impostor, &token, &req()).await.is_err());
+        assert!(request(addr, impostor, &mine, &token, &req(my_key)).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn registering_a_key_we_dont_hold_fails() {
+        let token = token();
+        let (private, public) = keypair();
+        let (mine, _) = keypair();
+        let (_, someone_elses) = keypair();
+        let addr = start(token.clone(), private).await;
+        assert!(request(addr, public, &mine, &token, &req(someone_elses)).await.is_err());
+    }
+
+    /// Replays a recorded admission against a fresh connection: the request no longer
+    /// decrypts, because it was bound to the first connection's ephemeral key
+    #[tokio::test]
+    async fn recorded_request_cant_be_replayed() {
+        let token = token();
+        let (private, public) = keypair();
+        let (mine, my_key) = keypair();
+        let addr = start(token.clone(), private).await;
+        let mut buf = vec![0u8; NOISE_MAX];
+
+        let mut hs = snow::Builder::new(NOISE_PARAMS.parse().unwrap())
+            .prologue(&prologue(&token))
+            .unwrap()
+            .psk(0, &token.admission_psk())
+            .unwrap()
+            .local_private_key(&mine)
+            .unwrap()
+            .remote_public_key(&public)
+            .unwrap()
+            .build_initiator()
+            .unwrap();
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        let n = hs.write_message(&[], &mut buf).unwrap();
+        let first = buf[..n].to_vec();
+        write_frame(&mut stream, &first).await.unwrap();
+        let msg = read_frame(&mut stream, NOISE_MAX).await.unwrap();
+        hs.read_message(&msg, &mut buf).unwrap();
+        let n = hs.write_message(&serde_json::to_vec(&req(my_key)).unwrap(), &mut buf).unwrap();
+        let third = buf[..n].to_vec();
+        write_frame(&mut stream, &third).await.unwrap();
+        assert!(read_frame(&mut stream, NOISE_MAX).await.is_ok());
+
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        write_frame(&mut stream, &first).await.unwrap();
+        read_frame(&mut stream, NOISE_MAX).await.unwrap();
+        write_frame(&mut stream, &third).await.unwrap();
+        assert!(read_frame(&mut stream, NOISE_MAX).await.is_err(), "the replayed request was answered");
     }
 }
