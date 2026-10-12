@@ -11,7 +11,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD_NO_PAD;
-use chacha20poly1305::aead::{Aead, AeadCore, KeyInit, OsRng};
+use chacha20poly1305::aead::{Aead, Generate, KeyInit};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use pkarr::dns::Name;
 use pkarr::dns::rdata::{RData, TXT};
@@ -93,7 +93,7 @@ fn encode(entry_points: &[EntryPoint], token: &JoinToken) -> Result<SignedPacket
     let body = RecordBody { version: RECORD_VERSION, entry_points: entry_points.to_vec() };
     let plain = postcard::to_stdvec(&body)?;
     let cipher = XChaCha20Poly1305::new(&token.record_key().into());
-    let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
+    let nonce = XNonce::generate();
     let mut sealed = nonce.to_vec();
     sealed.extend(cipher.encrypt(&nonce, plain.as_slice()).map_err(|_| anyhow::anyhow!("encrypting the record"))?);
     let text = STANDARD_NO_PAD.encode(sealed);
@@ -118,9 +118,10 @@ fn decode(packet: &SignedPacket, token: &JoinToken) -> Result<Vec<EntryPoint>> {
         bail!("the cluster record is too short");
     }
     let (nonce, ciphertext) = sealed.split_at(24);
+    let nonce = XNonce::try_from(nonce).context("the cluster record nonce is malformed")?;
     let cipher = XChaCha20Poly1305::new(&token.record_key().into());
     let plain = cipher
-        .decrypt(XNonce::from_slice(nonce), ciphertext)
+        .decrypt(&nonce, ciphertext)
         .map_err(|_| anyhow::anyhow!("the cluster record doesn't decrypt with this join token"))?;
     let body: RecordBody = postcard::from_bytes(&plain).context("the cluster record is malformed")?;
     if body.version != RECORD_VERSION {
