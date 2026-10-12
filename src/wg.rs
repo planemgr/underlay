@@ -41,7 +41,7 @@ pub struct PrivateKey(pub [u8; 32]);
 
 impl PrivateKey {
     pub fn generate() -> Self {
-        Self(StaticSecret::random_from_rng(rand::rngs::OsRng).to_bytes())
+        Self(StaticSecret::from(rand::random::<[u8; 32]>()).to_bytes())
     }
 
     pub fn public(&self) -> PubKey {
