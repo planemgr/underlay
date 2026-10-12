@@ -410,7 +410,7 @@ impl Node {
         targets.retain(|t| t.wg_key != self.public_key.0 && t.name != self.s.name);
         targets.sort_by_key(|t| t.wg_key);
         targets.dedup_by_key(|t| t.wg_key);
-        targets.shuffle(&mut rand::thread_rng());
+        targets.shuffle(&mut rand::rng());
 
         let request = AdmissionRequest { name: self.s.name.clone(), wg_key: self.public_key, endpoints, hint };
         for target in &targets {
@@ -502,7 +502,7 @@ impl Node {
                 .filter(|m| m.name != self.s.name)
                 .map(|m| (fresh.contains(&m.wg_key), m.name.clone(), m.mesh_ip))
                 .collect();
-            peers.shuffle(&mut rand::thread_rng());
+            peers.shuffle(&mut rand::rng());
             peers.sort_by_key(|(fresh, ..)| !fresh);
             peers.into_iter().map(|(_, name, ip)| (name, ip)).collect()
         };
