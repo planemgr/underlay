@@ -44,7 +44,7 @@ x25519-dalek = { version = "2.0.1", features = ["static_secrets"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 netlink-packet-core = "0.7"
-netlink-packet-generic = "0.3"
+netlink-packet-generic = "0.5"
 netlink-packet-route = "0.21"
 netlink-packet-wireguard = "0.2"
 netlink-request = "2.0.0"

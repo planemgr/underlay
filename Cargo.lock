@@ -725,6 +725,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "netlink-packet-core"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d6e2daf9a8c2e21302714706860a0e6be02e03d17294ecc66b354ea7d4059dd"
+
+[[package]]
 name = "netlink-packet-generic"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -732,8 +738,18 @@ checksum = "1cd7eb8ad331c84c6b8cb7f685b448133e5ad82e1ffd5acafac374af4a5a308b"
 dependencies = [
  "anyhow",
  "byteorder",
- "netlink-packet-core",
+ "netlink-packet-core 0.7.0",
  "netlink-packet-utils",
+]
+
+[[package]]
+name = "netlink-packet-generic"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e609a7be61318181c110df304d54ed3f3e129b9569b8ca16e40a9d644f46930c"
+dependencies = [
+ "netlink-packet-core 0.9.0",
+ "zerocopy",
 ]
 
 [[package]]
@@ -747,7 +763,7 @@ dependencies = [
  "byteorder",
  "libc",
  "log",
- "netlink-packet-core",
+ "netlink-packet-core 0.7.0",
  "netlink-packet-utils",
 ]
 
@@ -773,7 +789,7 @@ dependencies = [
  "byteorder",
  "libc",
  "log",
- "netlink-packet-generic",
+ "netlink-packet-generic 0.3.3",
  "netlink-packet-utils",
 ]
 
@@ -783,8 +799,8 @@ version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be5b6ba92694217becd88bbd0a593c72055b3ff57ee2f814caad887e8d4b705a"
 dependencies = [
- "netlink-packet-core",
- "netlink-packet-generic",
+ "netlink-packet-core 0.7.0",
+ "netlink-packet-generic 0.3.3",
  "netlink-packet-route",
  "netlink-packet-utils",
  "netlink-sys",
@@ -1381,8 +1397,8 @@ dependencies = [
  "hkdf",
  "ipnet",
  "libc",
- "netlink-packet-core",
- "netlink-packet-generic",
+ "netlink-packet-core 0.7.0",
+ "netlink-packet-generic 0.5.0",
  "netlink-packet-route",
  "netlink-packet-wireguard",
  "netlink-request",
@@ -1529,6 +1545,26 @@ dependencies = [
  "rand_core 0.6.4",
  "serde",
  "zeroize",
+]
+
+[[package]]
+name = "zerocopy"
+version = "0.8.63"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5fe1f8f1b06191a00962174c61aa5005e0bb391a6d80d07e24d115c01a92ed8"
+dependencies = [
+ "zerocopy-derive",
+]
+
+[[package]]
+name = "zerocopy-derive"
+version = "0.8.63"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "863ad3ac83293fb4d740aedbfdc9240dd8d1a50c1099acd76ce80ce7c7230c7f"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
