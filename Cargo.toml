@@ -29,7 +29,7 @@ snow = { version = "0.10.0", default-features = false, features = [
   "use-getrandom",
 ] }
 socket2 = { version = "0.6.4", features = ["all"] }
-tokio = { version = "=1.53.2", features = [
+tokio = { version = "=1.53.3", features = [
   "rt-multi-thread",
   "macros",
   "net",
