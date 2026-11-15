@@ -1,7 +1,7 @@
 //! Interface addresses, link state and local address discovery over rtnetlink.
 //!
 //! Adapted from innernet's `shared/src/netlink.rs` (MIT, Copyright (c) 2021 tonari株式会社, 一般社団法人tonari), using
-//! the same netlink crates as the WireGuard side in `wg.rs` so both speak one netlink version.
+//! the same netlink crates and request loop (`netlink.rs`) as the WireGuard side in `wg.rs`.
 
 use std::ffi::c_char;
 use std::fmt;
@@ -11,12 +11,13 @@ use std::str::FromStr;
 
 use ipnet::IpNet;
 use netlink_packet_core::{
-    NLM_F_ACK, NLM_F_CREATE, NLM_F_DUMP, NLM_F_REPLACE, NLM_F_REQUEST, NetlinkMessage, NetlinkPayload,
+    NLM_F_ACK, NLM_F_CREATE, NLM_F_DUMP, NLM_F_EXCL, NLM_F_REPLACE, NLM_F_REQUEST, NetlinkMessage, NetlinkPayload,
 };
 use netlink_packet_route::address::{self, AddressHeader, AddressMessage};
 use netlink_packet_route::link::{self, InfoKind, LinkFlags, LinkHeader, LinkInfo, LinkMessage, State};
 use netlink_packet_route::{AddressFamily, RouteNetlinkMessage};
-use netlink_request::netlink_request_rtnl;
+
+use crate::netlink;
 
 /// A network interface name as the kernel accepts it, kept NUL-terminated for libc
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -76,6 +77,9 @@ pub fn exists(interface: &InterfaceName) -> bool {
     if_nametoindex(interface).is_ok()
 }
 
+/// Flags for a request that changes something; `NLM_F_EXCL` makes creating what exists an EEXIST
+const CHANGE: u16 = NLM_F_REQUEST | NLM_F_ACK | NLM_F_EXCL | NLM_F_CREATE;
+
 /// Creates a kernel WireGuard interface called `interface`
 pub fn add_wireguard(interface: &InterfaceName) -> io::Result<()> {
     let mut message = LinkMessage::default();
@@ -83,7 +87,7 @@ pub fn add_wireguard(interface: &InterfaceName) -> io::Result<()> {
         link::LinkAttribute::IfName(interface.to_string()),
         link::LinkAttribute::LinkInfo(vec![LinkInfo::Kind(InfoKind::Wireguard)]),
     ];
-    match netlink_request_rtnl(RouteNetlinkMessage::NewLink(message), None) {
+    match netlink::route(RouteNetlinkMessage::NewLink(message), CHANGE) {
         // Created in the meantime
         Err(e) if e.raw_os_error() == Some(libc::EEXIST) => Ok(()),
         other => other.map(|_| ()),
@@ -99,7 +103,7 @@ pub fn set_up(interface: &InterfaceName, mtu: u32) -> io::Result<()> {
         ..Default::default()
     };
     message.attributes = vec![link::LinkAttribute::Mtu(mtu)];
-    netlink_request_rtnl(RouteNetlinkMessage::SetLink(message), None)?;
+    netlink::route(RouteNetlinkMessage::SetLink(message), CHANGE)?;
     Ok(())
 }
 
@@ -127,15 +131,15 @@ fn address_message(interface: &InterfaceName, addr: IpNet) -> io::Result<Address
 }
 
 pub fn set_addr(interface: &InterfaceName, addr: IpNet) -> io::Result<()> {
-    netlink_request_rtnl(
+    netlink::route(
         RouteNetlinkMessage::NewAddress(address_message(interface, addr)?),
-        Some(NLM_F_REQUEST | NLM_F_ACK | NLM_F_REPLACE | NLM_F_CREATE),
+        NLM_F_REQUEST | NLM_F_ACK | NLM_F_REPLACE | NLM_F_CREATE,
     )?;
     Ok(())
 }
 
 pub fn del_addr(interface: &InterfaceName, addr: IpNet) -> io::Result<()> {
-    match netlink_request_rtnl(RouteNetlinkMessage::DelAddress(address_message(interface, addr)?), None) {
+    match netlink::route(RouteNetlinkMessage::DelAddress(address_message(interface, addr)?), CHANGE) {
         // Already gone
         Err(e) if e.raw_os_error() == Some(libc::EADDRNOTAVAIL) => Ok(()),
         other => other.map(|_| ()),
@@ -145,8 +149,7 @@ pub fn del_addr(interface: &InterfaceName, addr: IpNet) -> io::Result<()> {
 /// Names of the links that are up, except loopback and `exclude` (our own WireGuard interface)
 fn up_links(exclude: &InterfaceName) -> io::Result<Vec<String>> {
     let exclude = exclude.as_str();
-    let responses =
-        netlink_request_rtnl(RouteNetlinkMessage::GetLink(LinkMessage::default()), Some(NLM_F_DUMP | NLM_F_REQUEST))?;
+    let responses = netlink::route(RouteNetlinkMessage::GetLink(LinkMessage::default()), NLM_F_DUMP | NLM_F_REQUEST)?;
     Ok(responses
         .into_iter()
         .filter_map(|response| match response {
@@ -172,10 +175,8 @@ fn up_links(exclude: &InterfaceName) -> io::Result<Vec<String>> {
 
 /// Every global-scope address on the host, with its link's index
 fn global_addrs() -> io::Result<Vec<(u32, IpNet)>> {
-    let responses = netlink_request_rtnl(
-        RouteNetlinkMessage::GetAddress(AddressMessage::default()),
-        Some(NLM_F_DUMP | NLM_F_REQUEST),
-    )?;
+    let responses =
+        netlink::route(RouteNetlinkMessage::GetAddress(AddressMessage::default()), NLM_F_DUMP | NLM_F_REQUEST)?;
     Ok(responses
         .into_iter()
         .filter_map(|response| match response {

@@ -15,17 +15,17 @@ use anyhow::{Context, Result};
 use ipnet::IpNet;
 use netlink_packet_core::{NLM_F_ACK, NLM_F_DUMP, NLM_F_REQUEST, NetlinkPayload};
 use netlink_packet_generic::GenlMessage;
-use netlink_packet_wireguard::constants::{AF_INET, AF_INET6, WGPEER_F_REMOVE_ME, WGPEER_F_REPLACE_ALLOWEDIPS};
-use netlink_packet_wireguard::nlas::{WgAllowedIp, WgAllowedIpAttrs, WgDeviceAttrs, WgPeer, WgPeerAttrs};
-use netlink_packet_wireguard::{Wireguard, WireguardCmd};
-use netlink_request::netlink_request_genl;
+use netlink_packet_wireguard::{
+    WireguardAddressFamily, WireguardAllowedIp, WireguardAllowedIpAttr, WireguardAttribute, WireguardCmd,
+    WireguardMessage, WireguardPeer, WireguardPeerAttribute, WireguardPeerFlags, WireguardTimeSpec,
+};
 use tracing::{debug, info};
 use x25519_dalek::{PublicKey, StaticSecret};
 
 use crate::net::InterfaceName;
 use crate::roster::Member;
 use crate::util::PubKey;
-use crate::{endpoints, net};
+use crate::{endpoints, net, netlink};
 
 /// Sessions rekey every two minutes while in use; older handshakes mean the session is gone
 pub const HANDSHAKE_FRESH: Duration = Duration::from_secs(180);
@@ -86,8 +86,11 @@ impl Interface {
         if !net::exists(&self.name) {
             net::add_wireguard(&self.name).with_context(|| format!("creating WireGuard interface {}", self.name))?;
         }
-        set_device(&self.name, vec![WgDeviceAttrs::PrivateKey(private_key.0), WgDeviceAttrs::ListenPort(listen_port)])
-            .with_context(|| format!("configuring WireGuard interface {}", self.name))
+        set_device(
+            &self.name,
+            vec![WireguardAttribute::PrivateKey(private_key.0), WireguardAttribute::ListenPort(listen_port)],
+        )
+        .with_context(|| format!("configuring WireGuard interface {}", self.name))
     }
 
     /// Gives the interface `addr` as its only address and brings it up. The prefix routes the
@@ -144,12 +147,12 @@ impl Interface {
             }
 
             let mut attrs = vec![
-                WgPeerAttrs::PublicKey(key.0),
-                WgPeerAttrs::Flags(WGPEER_F_REPLACE_ALLOWEDIPS),
-                WgPeerAttrs::AllowedIps(vec![allowed_ip(allowed)]),
-                WgPeerAttrs::PersistentKeepalive(keepalive),
+                WireguardPeerAttribute::PublicKey(key.0),
+                WireguardPeerAttribute::Flags(WireguardPeerFlags::ReplaceAllowedIps),
+                WireguardPeerAttribute::AllowedIps(vec![allowed_ip(allowed)]),
+                WireguardPeerAttribute::PersistentKeepalive(keepalive),
             ];
-            attrs.extend(endpoint.map(WgPeerAttrs::Endpoint));
+            attrs.extend(endpoint.map(WireguardPeerAttribute::Endpoint));
             if peer.is_none() {
                 info!(
                     "adding peer {} ({}) at {}",
@@ -160,18 +163,21 @@ impl Interface {
             } else {
                 debug!("updating peer {} endpoint {:?}", member.name, endpoint);
             }
-            changes.push(WgPeer(attrs));
+            changes.push(WireguardPeer(attrs));
         }
 
         let wanted: Vec<PubKey> = members.iter().map(|m| m.wg_key).collect();
         for key in current.keys().filter(|k| !wanted.contains(k)) {
             info!("removing peer {key}");
-            changes.push(WgPeer(vec![WgPeerAttrs::PublicKey(key.0), WgPeerAttrs::Flags(WGPEER_F_REMOVE_ME)]));
+            changes.push(WireguardPeer(vec![
+                WireguardPeerAttribute::PublicKey(key.0),
+                WireguardPeerAttribute::Flags(WireguardPeerFlags::RemoveMe),
+            ]));
             self.rotation.remove(key);
         }
 
         for chunk in changes.chunks(PEERS_PER_MESSAGE) {
-            set_device(&self.name, vec![WgDeviceAttrs::Peers(chunk.to_vec())])
+            set_device(&self.name, vec![WireguardAttribute::Peers(chunk.to_vec())])
                 .with_context(|| format!("updating peers of {}", self.name))?;
         }
         Ok(())
@@ -223,40 +229,40 @@ pub fn is_fresh(peer: &Peer) -> bool {
     peer.last_handshake.and_then(|t| SystemTime::now().duration_since(t).ok()).is_some_and(|age| age < HANDSHAKE_FRESH)
 }
 
-fn allowed_ip(net: IpNet) -> WgAllowedIp {
-    let family = if net.addr().is_ipv4() { AF_INET } else { AF_INET6 };
-    WgAllowedIp(vec![
-        WgAllowedIpAttrs::Family(family),
-        WgAllowedIpAttrs::IpAddr(net.addr()),
-        WgAllowedIpAttrs::Cidr(net.prefix_len()),
+fn allowed_ip(net: IpNet) -> WireguardAllowedIp {
+    let family = if net.addr().is_ipv4() { WireguardAddressFamily::Ipv4 } else { WireguardAddressFamily::Ipv6 };
+    WireguardAllowedIp(vec![
+        WireguardAllowedIpAttr::Family(family),
+        WireguardAllowedIpAttr::IpAddr(net.addr()),
+        WireguardAllowedIpAttr::Cidr(net.prefix_len()),
     ])
 }
 
 /// Sends `attrs` to the interface in one `WG_CMD_SET_DEVICE`; what it leaves out stays as is
-fn set_device(interface: &InterfaceName, mut attrs: Vec<WgDeviceAttrs>) -> io::Result<()> {
-    attrs.insert(0, WgDeviceAttrs::IfName(interface.to_string()));
-    let message = GenlMessage::from_payload(Wireguard { cmd: WireguardCmd::SetDevice, nlas: attrs });
-    netlink_request_genl(message, Some(NLM_F_REQUEST | NLM_F_ACK))?;
+fn set_device(interface: &InterfaceName, mut attrs: Vec<WireguardAttribute>) -> io::Result<()> {
+    attrs.insert(0, WireguardAttribute::IfName(interface.to_string()));
+    let message = GenlMessage::from_payload(WireguardMessage { cmd: WireguardCmd::SetDevice, attributes: attrs });
+    netlink::generic(message, NLM_F_REQUEST | NLM_F_ACK)?;
     Ok(())
 }
 
 /// Reads the interface. The kernel answers with a dump that splits large peer lists across
 /// messages, and a peer with many allowed IPs across two of them (repeating its key).
 fn get_device(interface: &InterfaceName) -> io::Result<Device> {
-    let message = GenlMessage::from_payload(Wireguard {
+    let message = GenlMessage::from_payload(WireguardMessage {
         cmd: WireguardCmd::GetDevice,
-        nlas: vec![WgDeviceAttrs::IfName(interface.to_string())],
+        attributes: vec![WireguardAttribute::IfName(interface.to_string())],
     });
-    let responses = netlink_request_genl(message, Some(NLM_F_REQUEST | NLM_F_ACK | NLM_F_DUMP))?;
+    let responses = netlink::generic(message, NLM_F_REQUEST | NLM_F_ACK | NLM_F_DUMP)?;
     let mut device = Device { private_key: None, peers: vec![] };
     let attrs = responses.into_iter().filter_map(|r| match r.payload {
-        NetlinkPayload::InnerMessage(message) => Some(message.payload.nlas),
+        NetlinkPayload::InnerMessage(message) => Some(message.payload.attributes),
         _ => None,
     });
     for attr in attrs.flatten() {
         match attr {
-            WgDeviceAttrs::PrivateKey(key) if key != [0; 32] => device.private_key = Some(PrivateKey(key)),
-            WgDeviceAttrs::Peers(peers) => {
+            WireguardAttribute::PrivateKey(key) if key != [0; 32] => device.private_key = Some(PrivateKey(key)),
+            WireguardAttribute::Peers(peers) => {
                 for peer in peers.into_iter().filter_map(parse_peer) {
                     match device.peers.last_mut() {
                         Some(last) if last.public_key == peer.public_key => last.allowed_ips.extend(peer.allowed_ips),
@@ -270,18 +276,19 @@ fn get_device(interface: &InterfaceName) -> io::Result<Device> {
     Ok(device)
 }
 
-fn parse_peer(peer: WgPeer) -> Option<Peer> {
+fn parse_peer(peer: WireguardPeer) -> Option<Peer> {
     let mut public_key = None;
     let mut parsed =
         Peer { public_key: PubKey([0; 32]), endpoint: None, keepalive: 0, allowed_ips: vec![], last_handshake: None };
     for attr in peer.0 {
         match attr {
-            WgPeerAttrs::PublicKey(key) => public_key = Some(PubKey(key)),
-            WgPeerAttrs::Endpoint(endpoint) => parsed.endpoint = Some(endpoint),
-            WgPeerAttrs::PersistentKeepalive(secs) => parsed.keepalive = secs,
-            // Zero when the peer never completed a handshake
-            WgPeerAttrs::LastHandshake(time) if time > UNIX_EPOCH => parsed.last_handshake = Some(time),
-            WgPeerAttrs::AllowedIps(ips) => parsed.allowed_ips.extend(ips.iter().filter_map(parse_allowed_ip)),
+            WireguardPeerAttribute::PublicKey(key) => public_key = Some(PubKey(key)),
+            WireguardPeerAttribute::Endpoint(endpoint) => parsed.endpoint = Some(endpoint),
+            WireguardPeerAttribute::PersistentKeepalive(secs) => parsed.keepalive = secs,
+            WireguardPeerAttribute::LastHandshake(time) => parsed.last_handshake = handshake_time(time),
+            WireguardPeerAttribute::AllowedIps(ips) => {
+                parsed.allowed_ips.extend(ips.iter().filter_map(parse_allowed_ip))
+            }
             _ => {}
         }
     }
@@ -289,13 +296,21 @@ fn parse_peer(peer: WgPeer) -> Option<Peer> {
     Some(parsed)
 }
 
-fn parse_allowed_ip(ip: &WgAllowedIp) -> Option<IpNet> {
+/// The kernel reports zero when the peer never completed a handshake
+fn handshake_time(time: WireguardTimeSpec) -> Option<SystemTime> {
+    let seconds = u64::try_from(time.seconds).ok()?;
+    let nanos = u32::try_from(time.nano_seconds).ok().filter(|n| *n < 1_000_000_000)?;
+    let time = UNIX_EPOCH.checked_add(Duration::new(seconds, nanos))?;
+    (time > UNIX_EPOCH).then_some(time)
+}
+
+fn parse_allowed_ip(ip: &WireguardAllowedIp) -> Option<IpNet> {
     let addr = ip.iter().find_map(|a| match a {
-        WgAllowedIpAttrs::IpAddr(addr) => Some(*addr),
+        WireguardAllowedIpAttr::IpAddr(addr) => Some(*addr),
         _ => None,
     })?;
     let cidr = ip.iter().find_map(|a| match a {
-        WgAllowedIpAttrs::Cidr(cidr) => Some(*cidr),
+        WireguardAllowedIpAttr::Cidr(cidr) => Some(*cidr),
         _ => None,
     })?;
     IpNet::new(addr, cidr).ok()

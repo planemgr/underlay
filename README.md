@@ -132,5 +132,5 @@ keys keeping their addresses, joining while a node is down, and the whole cluste
 once. It uses kernel WireGuard, so it needs a Docker host whose kernel
 has it.
 
-`src/net.rs` is adapted from innernet (MIT), and netlink requests go through its
-`netlink-request` crate.
+`src/net.rs` and `src/netlink.rs` (the netlink request loop, from its `netlink-request` crate)
+are adapted from innernet (MIT).
