@@ -11,6 +11,7 @@ mod admission;
 mod api;
 mod endpoints;
 mod net;
+mod netlink;
 mod node;
 mod proto;
 mod record;
