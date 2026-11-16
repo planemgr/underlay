@@ -485,19 +485,6 @@ dependencies = [
 
 [[package]]
 name = "getrandom"
-version = "0.2.17"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
-dependencies = [
- "cfg-if",
- "js-sys",
- "libc",
- "wasi",
- "wasm-bindgen",
-]
-
-[[package]]
-name = "getrandom"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd"
@@ -639,6 +626,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ef9ac18847474e638e3702b76c65d4eb93428471a74778ef0f1be711717f89b5"
 
 [[package]]
+name = "lru"
+version = "0.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a9f71e3591c7ec44d3e563e87bf14ddc2bada8519dca046e5b0e560cd004e2d"
+
+[[package]]
 name = "mainline"
 version = "8.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -651,7 +644,7 @@ dependencies = [
  "flume",
  "futures-lite",
  "getrandom 0.4.3",
- "lru",
+ "lru 0.18.5",
  "serde",
  "serde_bencode",
  "serde_bytes",
@@ -740,21 +733,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ntimestamp"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c50f94c405726d3e0095e89e72f75ce7f6587b94a8bd8dc8054b73f65c0fd68c"
-dependencies = [
- "base32",
- "document-features",
- "getrandom 0.2.17",
- "httpdate",
- "js-sys",
- "once_cell",
- "serde",
-]
-
-[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -789,9 +767,9 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pkarr"
-version = "8.1.0"
+version = "9.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0fa6e085dac5eb00b309bfafd0fa0db088a7d3aaad4b5de75db4732e7c7f7595"
+checksum = "c5e60e8b1fb1417698295416b1b1b1bd457b425deab835d6871422012ab3a50b"
 dependencies = [
  "async-compat",
  "base32",
@@ -802,10 +780,11 @@ dependencies = [
  "ed25519-dalek",
  "futures-lite",
  "getrandom 0.4.3",
+ "httpdate",
+ "js-sys",
  "log",
- "lru",
+ "lru 0.19.0",
  "mainline",
- "ntimestamp",
  "self_cell",
  "serde",
  "sha1_smol",
